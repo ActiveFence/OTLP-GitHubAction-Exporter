@@ -115,6 +115,22 @@ job_counter.add(len(job_lst))
 successful_job_counter = meter.create_counter(name="github.workflow.successful.job_count", description="Number of Successful Jobs in the Workflow Run")
 failed_job_counter = meter.create_counter(name="github.workflow.failed.job_count", description="Number of Failed Jobs in the Workflow Run")
 
+workflow_run_duration_histogram = meter.create_histogram(
+    name="github.workflow.run.duration",
+    unit="s",
+    description="Duration of a GitHub Actions workflow run, in seconds."
+)
+job_duration_histogram = meter.create_histogram(
+    name="github.workflow.job.duration",
+    unit="s",
+    description="Duration of a GitHub Actions workflow job, in seconds."
+)
+step_duration_histogram = meter.create_histogram(
+    name="github.workflow.step.duration",
+    unit="s",
+    description="Duration of a GitHub Actions workflow step, in seconds."
+)
+
 
 # Trace parent
 workflow_run_atts = json.loads(get_workflow_run_by_run_id)
@@ -268,16 +284,61 @@ for job in job_lst:
                     step_completed_at=step['completed_at']
                                     
                 child_1.end(end_time=do_time(step_completed_at))
+                try:
+                    step_duration_seconds = (do_time(step_completed_at) - do_time(step_started_at)) / 1e9
+                    if step_duration_seconds >= 0:
+                        step_duration_histogram.record(
+                            step_duration_seconds,
+                            attributes={
+                                "repo": GITHUB_REPOSITORY_NAME,
+                                "workflow": str(workflow_run_atts.get("path") or workflow_run_atts.get("name") or WORKFLOW_RUN_NAME),
+                                "job": str(job["name"]),
+                                "step": str(step["name"]),
+                                "conclusion": str(step.get("conclusion") or ""),
+                                "runner_group": str(job.get("runner_group_name") or ""),
+                            },
+                        )
+                except Exception as e:
+                    print("Failed to record step duration histogram ->", step["name"], "<- error", e)
                 print("Finished processing step ->",step['name'],"from job",job['name'])
             except Exception as e:
                 print("Unable to process step ->",step['name'],"<- due to error",e)
-                
+
         child_0.end(end_time=do_time(job['completed_at']))
+        try:
+            job_duration_seconds = (do_time(job["completed_at"]) - do_time(job["started_at"])) / 1e9
+            if job_duration_seconds >= 0:
+                job_duration_histogram.record(
+                    job_duration_seconds,
+                    attributes={
+                        "repo": GITHUB_REPOSITORY_NAME,
+                        "workflow": str(workflow_run_atts.get("path") or workflow_run_atts.get("name") or WORKFLOW_RUN_NAME),
+                        "job": str(job["name"]),
+                        "conclusion": str(job.get("conclusion") or ""),
+                        "runner_group": str(job.get("runner_group_name") or ""),
+                    },
+                )
+        except Exception as e:
+            print("Failed to record job duration histogram ->", job["name"], "<- error", e)
         print("Finished processing job ->",job['name'])
     except Exception as e:
         print("Unable to process job ->",job['name'],"<- due to error",e)
 
 workflow_run_finish_time=do_time(workflow_run_atts['updated_at'])
 p_parent.end(end_time=workflow_run_finish_time)
+try:
+    workflow_run_duration_seconds = (workflow_run_finish_time - do_time(workflow_run_atts["run_started_at"])) / 1e9
+    if workflow_run_duration_seconds >= 0:
+        workflow_run_duration_histogram.record(
+            workflow_run_duration_seconds,
+            attributes={
+                "repo": GITHUB_REPOSITORY_NAME,
+                "workflow": str(workflow_run_atts.get("path") or workflow_run_atts.get("name") or WORKFLOW_RUN_NAME),
+                "conclusion": str(workflow_run_atts.get("conclusion") or ""),
+                "event": str(workflow_run_atts.get("event") or ""),
+            },
+        )
+except Exception as e:
+    print("Failed to record workflow run duration histogram ->", WORKFLOW_RUN_NAME, "<- error", e)
 print("Finished processing Workflow ->",WORKFLOW_RUN_NAME,"run id ->",WORKFLOW_RUN_ID)
 print("All data exported to OTLP")
