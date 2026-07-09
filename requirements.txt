@@ -4,6 +4,10 @@ opentelemetry.exporter.otlp.proto.grpc
 opentelemetry.exporter.otlp.proto.http
 opentelemetry.instrumentation.logging
 pyrfc3339
-ghapi
+# Pinned: ghapi 2.0.0 made the client async (calls return coroutines),
+# breaking json.dumps() in the exporter. fastcore is ghapi's transitive dep,
+# pinned to the last-known-good pair. See RDP-22773.
+ghapi==1.1.0
+fastcore==1.14.3
 requests
 python-dateutil
