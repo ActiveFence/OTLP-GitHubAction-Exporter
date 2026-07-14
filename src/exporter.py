@@ -10,6 +10,7 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.trace import Status, StatusCode
 from otel import otel_logger,otel_tracer,otel_meter,create_otel_attributes
 import requests
+import time
 import zipfile
 import dateutil.parser as dp
 
@@ -152,13 +153,33 @@ req_headers = {
 logs_url=GITHUB_API_URL+"/repos/"+GITHUB_REPOSITORY_NAME.split("/")[0]+"/"+GITHUB_REPOSITORY_NAME.split("/")[1]+"/actions/runs/"+str(WORKFLOW_RUN_ID)+"/logs"
 
 print(f"Fetching Logs from: {logs_url}")
-r1=requests.get(logs_url,headers=req_headers)
 
-with open("log.zip",'wb') as output_file:
-    output_file.write(r1.content)
+# Large workflows (matrix builds, multi-arch deploys) can produce log zips
+# hundreds of MB, and GitHub's redirect target sometimes drops the chunked
+# response partway (`urllib3.exceptions.ProtocolError: Response ended
+# prematurely`). Stream the download in chunks with retries; if the zip
+# is truncated or the download fails outright, we still emit spans and
+# metrics for every job/step — logs on the span are secondary.
+LOGS_AVAILABLE = False
+os.makedirs("./logs", exist_ok=True)
+for attempt in range(1, 4):
+    try:
+        with requests.get(logs_url, headers=req_headers, stream=True, timeout=(15, 300)) as r1:
+            r1.raise_for_status()
+            with open("log.zip", "wb") as output_file:
+                for chunk in r1.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        output_file.write(chunk)
+        with zipfile.ZipFile("log.zip", "r") as zip_ref:
+            zip_ref.extractall("./logs")
+        LOGS_AVAILABLE = True
+        break
+    except (requests.exceptions.RequestException, zipfile.BadZipFile) as e:
+        print(f"Log download attempt {attempt}/3 failed: {type(e).__name__}: {e}")
+        time.sleep(2 ** attempt)
 
-with zipfile.ZipFile("log.zip", 'r') as zip_ref:
-    zip_ref.extractall("./logs")
+if not LOGS_AVAILABLE:
+    print("Continuing without step logs — spans and metrics will still be emitted.")
 
 
 def _log_path_for_step(logs_dir: str, job_name: str, step_number: int, step_name: str, sanitize_slashes: bool = False) -> str:
